@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini-Minecraft Voxel 3D - Mundo INFINITO</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: skyblue; font-family: Arial, sans-serif; }
+        canvas { display: block; }
+        
+        /* Mira central */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M10 0v20M0 10h20" stroke="white" stroke-width="2" style="filter: drop-shadow(0px 0px 1px black);"/></svg>');
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        /* UI de Instruções */
+        #instructions {
+            position: absolute;
+            top: 0;
+            left: 0;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            z-index: 100;
+            pointer-events: none;
+        }
+        
+        /* Display de Tempo e Posição */
+        #status-display {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            font-size: 16px;
+            z-index: 100;
+        }
+
+        /* --- HOTBAR (Inalterado) --- */
+        #hotbar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 5px;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 5px;
+            border-radius: 5px;
+            pointer-events: none; 
+        }
+
+        .slot {
+            width: 50px;
+            height: 50px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 3px solid #555;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        .slot.active {
+            border-color: white;
+            transform: scale(1.1);
+            background-color: rgba(100, 100, 100, 0.5);
+        }
+
+        .block-icon {
+            width: 30px;
+            height: 30px;
+            box-shadow: 2px 2px 0px rgba(0,0,0,0.5);
+        }
+
+        .key-num {
+            position: absolute;
+            top: 2px;
+            left: 4px;
+            font-size: 10px;
+            color: white;
+            text-shadow: 1px 1px 0 #000;
+        }
+    </style>
+</head>
+<body>
+    <div id="instructions">
+        <h2>Mini-Minecraft 3D (Mundo Infinito)</h2>
+        <b>Mundo</b>: Infinito (Geração por Chunks)<br>
+        <b>W/A/S/D</b>: Mover | <b>Espaço</b>: Pular<br>
+        <b>1-6</b> ou <b>Scroll</b>: Trocar Bloco<br>
+        <b>Clique Esq</b>: Quebrar | <b>Clique Dir</b>: Colocar<br>
+        Clique para Ativar o Jogo
+    </div>
+    <div id="status-display">Dia: 06:00 | Chunks: 0</div>
+    <div id="crosshair"></div>
+    <div id="hotbar"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+
+    <script>
+        // --- Variáveis Globais ---
+        let scene, camera, renderer;
+        let raycaster;
+        let ambientLight, directionalLight;
+
+        // Configurações do Mundo
+        const CHUNK_SIZE = 10; 
+        const WORLD_HEIGHT = 16; 
+        const VIEW_DISTANCE = 3; // Aumentei para 3 para melhor visualização do "infinito"
+        const blockSize = 1;
+        
+        // Armazena dados e meshes dos chunks carregados
+        let chunks = {}; 
+        let mobs = new THREE.Group(); 
+        
+        // Posição do último chunk visto (para otimizar a checagem)
+        let lastChunkX = null;
+        let lastChunkZ = null;
+
+        // Configurações do Jogador
+        const playerHeight = 1.6;
+        const playerRadius = 0.3;
+        let selectedBlockType = 1;
+
+        // --- Variáveis de Tempo e Mobs ---
+        let time = 600; 
+        const timeSpeed = 20; 
+        let isNight = false;
+        
+        const mobMaterial = new THREE.MeshLambertMaterial({ color: 0x33ff33 }); 
+        const mobSize = 1.8; 
+
+        // --- Definição de Blocos (Inalterado) ---
+        const loader = new THREE.TextureLoader();
+        
+        function loadTex(url) {
+            const t = loader.load(url);
+            t.magFilter = THREE.NearestFilter;
+            return t;
+        }
+
+        const textureDirt = loadTex('https://threejs.org/examples/textures/minecraft/dirt.png');
+        const textureGrass = loadTex('https://threejs.org/examples/textures/minecraft/grass.png');
+
+        const blocksDef = [
+            { id: 1, name: 'Grama', color: '#55ff55', mat: new THREE.MeshLambertMaterial({ map: textureGrass, color: 0x55ff55 }) },
+            { id: 2, name: 'Terra', color: '#885533', mat: new THREE.MeshLambertMaterial({ map: textureDirt }) },
+            { id: 3, name: 'Pedra', color: '#777777', mat: new THREE.MeshLambertMaterial({ color: 0x777777 }) },
+            { id: 4, name: 'Areia', color: '#FFFFA0', mat: new THREE.MeshLambertMaterial({ color: 0xFFFF99 }) },
+            { id: 5, name: 'Madeira', color: '#AA7744', mat: new THREE.MeshLambertMaterial({ color: 0xAA7744 }) },
+            { id: 6, name: 'Vidro', color: '#AAFFFF', mat: new THREE.MeshLambertMaterial({ color: 0xAAFFFF, transparent: true, opacity: 0.6 }) }
+        ];
+
+        const blockMaterials = {};
+        blocksDef.forEach(b => blockMaterials[b.id] = b.mat);
+        const geometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize);
+        
+        // --- Movimentação / Controles (Inalterado) ---
+        let isLocked = false;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let canJump = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        const clock = new THREE.Clock();
+        const walkingSpeed = 6.0; 
+        const friction = 15.0; 
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); 
+            scene.fog = new THREE.Fog(0x87ceeb, 10, 25);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // Posição inicial no (0, 0) do mundo, no alto
+            camera.position.set(0, WORLD_HEIGHT + 2, 0); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+            
+            // Luzes
+            ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 20, 10);
+            scene.add(directionalLight);
+
+            raycaster = new THREE.Raycaster();
+            raycaster.far = 6; 
+
+            scene.add(mobs);
+            setupUI(); 
+            setupControls();
+            animate();
+        }
+        
+        // --- FUNÇÕES DE CHUNK ---
+
+        // Retorna a chave do chunk para as coordenadas globais (cx, cz)
+        function getChunkCoord(x, z) {
+            const cx = Math.floor(x / CHUNK_SIZE);
+            const cz = Math.floor(z / CHUNK_SIZE);
+            return `${cx},${cz}`;
+        }
+        
+        // GERAÇÃO DE DADOS: Gera apenas a matriz 3D de dados do chunk
+        function generateChunkDataOnly(cx, cz) {
+            const key = `${cx},${cz}`;
+            
+            // Se já geramos os dados, retornamos para não gerar de novo.
+            if (chunks[key] && chunks[key].data) return chunks[key].data;
+            
+            const chunkData = new Array(CHUNK_SIZE).fill(0).map(() => 
+                new Array(WORLD_HEIGHT).fill(0).map(() => 
+                    new Array(CHUNK_SIZE).fill(0)));
+
+            // Geração de Terreno
+            for (let x = 0; x < CHUNK_SIZE; x++) {
+                for (let z = 0; z < CHUNK_SIZE; z++) {
+                    const globalX = cx * CHUNK_SIZE + x;
+                    const globalZ = cz * CHUNK_SIZE + z;
+                    
+                    // Geração simples usando globalX/Z como seed para Perlin Noise (simulado com Seno/Coseno)
+                    let h = Math.floor(Math.sin(globalX * 0.1) * Math.cos(globalZ * 0.1) * 4 + 7);
+                    h = Math.max(1, Math.min(WORLD_HEIGHT - 1, h));
+
+                    for (let y = 0; y <= h; y++) {
+                        if (y === h) chunkData[x][y][z] = 1; // Grama
+                        else if (y > h - 3) chunkData[x][y][z] = 2; // Terra
+                        else chunkData[x][y][z] = 3; // Pedra
+                    }
+                }
+            }
+            
+            // Salva apenas os dados
+            chunks[key] = chunks[key] || {};
+            chunks[key].data = chunkData;
+
+            return chunkData;
+        }
+
+
+        // CRIAÇÃO VISUAL: Cria o grupo de meshes e adiciona à cena
+        function createChunkMesh(cx, cz) {
+            const key = `${cx},${cz}`;
+            const chunk = chunks[key];
+
+            // Se o chunk já tem mesh ou não tem dados, não faz nada
+            if (chunk.mesh || !chunk.data) return;
+
+            const chunkMesh = new THREE.Group();
+            // A posição do grupo de meshes é o canto inicial do chunk no mundo
+            chunkMesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE); 
+            
+            chunk.mesh = chunkMesh;
+
+            rebuildChunkMesh(cx, cz); // Constrói os meshes
+            scene.add(chunkMesh); // Adiciona à cena
+        }
+
+        // Reconstrói a representação visual (meshes) de um chunk
+        function rebuildChunkMesh(cx, cz) {
+            const key = `${cx},${cz}`;
+            const chunk = chunks[key];
+            if (!chunk || !chunk.mesh) return;
+
+            chunk.mesh.clear(); // Limpa meshes antigos
+
+            for (let x = 0; x < CHUNK_SIZE; x++) {
+                for (let y = 0; y < WORLD_HEIGHT; y++) {
+                    for (let z = 0; z < CHUNK_SIZE; z++) {
+                        const type = chunk.data[x][y][z];
+                        if (type !== 0) {
+                            addBlockMeshToChunk(chunk.mesh, x, y, z, type);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Adiciona um único mesh de bloco ao grupo de meshes do chunk
+        function addBlockMeshToChunk(chunkMeshGroup, x, y, z, type) {
+            const mat = blockMaterials[type];
+            const mesh = new THREE.Mesh(geometry, mat);
+            // Posição local dentro do chunk
+            mesh.position.set(x + 0.5, y + 0.5, z + 0.5); 
+            mesh.userData = { x, y, z, chunkMeshGroup }; 
+            chunkMeshGroup.add(mesh);
+        }
+        
+        // Obtém o bloco de uma coordenada global (x, y, z)
+        function getBlock(x, y, z) {
+            if (y < 0 || y >= WORLD_HEIGHT) {
+                return 0; // Se fora da altura, é ar
+            }
+            
+            const chunkKey = getChunkCoord(x, z);
+            const chunk = chunks[chunkKey];
+            
+            let chunkData;
+            
+            if (!chunk || !chunk.data) {
+                // Se o chunk não existe ou não tem dados, gera os dados *sob demanda*
+                chunkData = generateChunkDataOnly(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
+            } else {
+                chunkData = chunk.data;
+            }
+
+            // Coordenadas locais (sempre positivas devido ao uso do operador módulo)
+            const localX = x % CHUNK_SIZE;
+            const localZ = z % CHUNK_SIZE;
+            
+            const lx = localX < 0 ? localX + CHUNK_SIZE : localX;
+            const lz = localZ < 0 ? localZ + CHUNK_SIZE : localZ;
+
+            return chunkData[lx][y][lz];
+        }
+
+        // Define o bloco em uma coordenada global (x, y, z)
+        function setBlock(x, y, z, type) {
+            if (y < 0 || y >= WORLD_HEIGHT) return false;
+            
+            const chunkKey = getChunkCoord(x, z);
+            const chunk = chunks[chunkKey];
+            
+            // Certifica-se de que os dados do chunk existem antes de tentar alterar
+            if (!chunk || !chunk.data) {
+                // Gera os dados se não existirem
+                generateChunkDataOnly(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
+            }
+            
+            const localX = x % CHUNK_SIZE;
+            const localZ = z % CHUNK_SIZE;
+            
+            const lx = localX < 0 ? localX + CHUNK_SIZE : localX;
+            const lz = localZ < 0 ? localZ + CHUNK_SIZE : localZ;
+            
+            chunks[chunkKey].data[lx][y][lz] = type;
+            return true;
+        }
+
+        // Atualização Dinâmica de Chunks (Load/Unload)
+        function updateChunks() {
+            const playerChunkX = Math.floor(camera.position.x / CHUNK_SIZE);
+            const playerChunkZ = Math.floor(camera.position.z / CHUNK_SIZE);
+
+            if (playerChunkX === lastChunkX && playerChunkZ === lastChunkZ) return;
+
+            const chunksToKeep = new Set();
+            let loadedChunkCount = 0;
+
+            // 1. Carregar/Manter Chunks visíveis
+            for (let cx = playerChunkX - VIEW_DISTANCE; cx <= playerChunkX + VIEW_DISTANCE; cx++) {
+                for (let cz = playerChunkZ - VIEW_DISTANCE; cz <= playerChunkZ + VIEW_DISTANCE; cz++) {
+                    const key = `${cx},${cz}`;
+                    chunksToKeep.add(key);
+                    
+                    // Garante que os dados do chunk existam (geração sob demanda)
+                    if (!chunks[key] || !chunks[key].data) {
+                        generateChunkDataOnly(cx, cz);
+                    }
+
+                    // Se os dados existirem, cria o mesh (se ainda não tiver)
+                    if (!chunks[key].mesh) {
+                        createChunkMesh(cx, cz);
+                    }
+
+                    loadedChunkCount++;
+                }
+            }
+
+            // 2. Descarregar Chunks invisíveis
+            for (const key in chunks) {
+                if (!chunksToKeep.has(key)) {
+                    const chunk = chunks[key];
+                    if(chunk.mesh) {
+                        scene.remove(chunk.mesh); // Remove os meshes da cena
+                        
+                        // Libera a memória da geometria e material dos meshes
+                        chunk.mesh.traverse(obj => {
+                            if (obj.isMesh) {
+                                obj.geometry.dispose();
+                            }
+                        });
+
+                        // Guarda apenas os dados (mantém o progresso de construção do jogador)
+                        chunk.mesh = null; 
+                    }
+                }
+            }
+
+            lastChunkX = playerChunkX;
+            lastChunkZ = playerChunkZ;
+            
+            // Atualiza o display de status
+            const statusDisplay = document.getElementById('status-display');
+            statusDisplay.innerText = statusDisplay.innerText.split('|')[0] + `| Chunks Carregados: ${loadedChunkCount}`;
+        }
+
+
+        // --- SISTEMA DE COLISÃO e INTERAÇÃO (Usando getBlock/setBlock) ---
+        
+        function checkCollision(x, y, z) {
+            const ix = Math.floor(x);
+            const iy = Math.floor(y);
+            const iz = Math.floor(z);
+            return getBlock(ix, iy, iz) !== 0;
+        }
+
+        function checkPlayerCollision(pos) {
+            const feetY = pos.y - playerHeight;
+            const headY = pos.y - 0.2; 
+            const checks = [
+                { x: pos.x + playerRadius, z: pos.z + playerRadius },
+                { x: pos.x - playerRadius, z: pos.z + playerRadius },
+                { x: pos.x + playerRadius, z: pos.z - playerRadius },
+                { x: pos.x - playerRadius, z: pos.z - playerRadius }
+            ];
+            for (const p of checks) {
+                if (checkCollision(p.x, feetY, p.z)) return true;
+                if (checkCollision(p.x, headY, p.z)) return true;
+            }
+            return false;
+        }
+
+        function onMouseDown(event) {
+            if (!isLocked) { document.body.requestPointerLock(); return; }
+
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            
+            const allMeshes = [];
+            for (const key in chunks) {
+                if (chunks[key].mesh) {
+                    allMeshes.push(chunks[key].mesh);
+                }
+            }
+
+            const intersects = raycaster.intersectObjects(allMeshes, true); 
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const obj = intersect.object;
+                
+                // Posição global do bloco
+                const ix = Math.floor(obj.position.x + obj.parent.position.x);
+                const iy = Math.floor(obj.position.y + obj.parent.position.y);
+                const iz = Math.floor(obj.position.z + obj.parent.position.z);
+                
+                const chunkMeshGroup = obj.parent;
+                
+                if (event.button === 0) { // Quebrar
+                    if (setBlock(ix, iy, iz, 0)) {
+                        obj.geometry.dispose();
+                        chunkMeshGroup.remove(obj);
+                    }
+                } 
+                else if (event.button === 2) { // Colocar
+                    const normal = intersect.face.normal;
+                    const nx = ix + Math.round(normal.x);
+                    const ny = iy + Math.round(normal.y);
+                    const nz = iz + Math.round(normal.z);
+
+                    // Verifica colisão com o jogador
+                    const dx = Math.abs((nx + 0.5) - camera.position.x);
+                    const dz = Math.abs((nz + 0.5) - camera.position.z);
+                    const dy = Math.abs((ny + 0.5) - (camera.position.y - (playerHeight/2)));
+
+                    if (dx < 0.8 && dz < 0.8 && dy < 1.0) return;
+
+                    if (setBlock(nx, ny, nz, selectedBlockType)) {
+                        // Reconstroi o mesh do chunk alvo para adicionar o novo bloco
+                        const tcx = Math.floor(nx / CHUNK_SIZE);
+                        const tcz = Math.floor(nz / CHUNK_SIZE);
+                        rebuildChunkMesh(tcx, tcz); 
+                    }
+                }
+            }
+        }
+
+        // --- SISTEMA DE MOB E TEMPO (Adaptado para usar getBlock) ---
+        
+        function getSurfaceY(x, z) {
+            const ix = Math.floor(x);
+            const iz = Math.floor(z);
+
+            for(let y = WORLD_HEIGHT - 1; y >= 0; y--) {
+                if (getBlock(ix, y, iz) !== 0) {
+                    return y + 1;
+                }
+            }
+            return 0;
+        }
+        
+        function spawnZombie(x, z) {
+            const surfaceY = getSurfaceY(x, z);
+            if (surfaceY === 0 || surfaceY >= WORLD_HEIGHT) return;
+
+            const geo = new THREE.CylinderGeometry(0.4, 0.4, mobSize, 8); 
+            const mobMesh = new THREE.Mesh(geo, mobMaterial);
+            
+            mobMesh.position.set(x + 0.5, surfaceY + mobSize / 2, z + 0.5);
+            mobMesh.userData.target = camera.position; 
+            mobs.add(mobMesh);
+        }
+
+        function updateMobs(delta) {
+            const maxMobs = 5;
+            
+            // Só spawna mobs se o chunk do jogador estiver carregado
+            if (isNight && mobs.children.length < maxMobs && chunks[getChunkCoord(camera.position.x, camera.position.z)]) {
+                let spawnX = Math.floor(camera.position.x) + (Math.random() > 0.5 ? 15 : -15);
+                let spawnZ = Math.floor(camera.position.z) + (Math.random() > 0.5 ? 15 : -15);
+                
+                spawnZombie(spawnX, spawnZ);
+            }
+            
+            // Lógica de perseguição de mobs
+            mobs.children.forEach(mob => {
+                // Checa se o mob está em um chunk carregado antes de mover
+                const mobChunkKey = getChunkCoord(mob.position.x, mob.position.z);
+                if (!chunks[mobChunkKey] || !chunks[mobChunkKey].mesh) {
+                    return; // Mob em chunk descarregado, ignora
+                }
+
+                const targetPos = mob.userData.target;
+                const mobPos = mob.position;
+                const mobSpeed = 1.5 * delta;
+
+                let directionToPlayer = new THREE.Vector3().subVectors(targetPos, mobPos).normalize();
+                directionToPlayer.y = 0; 
+                
+                mobPos.x += directionToPlayer.x * mobSpeed;
+                mobPos.z += directionToPlayer.z * mobSpeed;
+                
+                const surfaceY = getSurfaceY(mobPos.x - 0.5, mobPos.z - 0.5);
+                const targetY = surfaceY + mobSize / 2;
+                
+                if (mobPos.y !== targetY) {
+                    mobPos.y += (targetY - mobPos.y) * 4 * delta; 
+                }
+            });
+            
+            if (!isNight && mobs.children.length > 0) {
+                mobs.clear();
+            }
+        }
+
+        function updateTime(delta) {
+            time += delta * timeSpeed;
+            if (time > 2400) time -= 2400; 
+            
+            const hours = Math.floor(time / 100);
+            const minutes = Math.floor(((time % 100) / 100) * 60);
+            document.getElementById('status-display').innerText = `Dia: ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} | Chunks Carregados: ${Object.keys(chunks).filter(k => chunks[k].mesh).length}`;
+            
+            const sunAngle = (time / 2400) * Math.PI * 2; 
+            directionalLight.position.x = 100 * Math.cos(sunAngle);
+            directionalLight.position.y = 100 * Math.sin(sunAngle);
+            directionalLight.position.z = 100;
+
+            let skyColor, lightIntensity;
+
+            if (time >= 400 && time <= 2000) {
+                isNight = false;
+                const dayFactor = Math.abs(time - 1200) / 800; 
+                lightIntensity = 1.0 - dayFactor * 0.5;
+                skyColor = new THREE.Color(0x87ceeb).lerp(new THREE.Color(0xdda0dd), dayFactor);
+            } 
+            else {
+                isNight = true;
+                lightIntensity = 0.15;
+                skyColor = new THREE.Color(0x0a0a25);
+            }
+
+            scene.background.copy(skyColor);
+            scene.fog = new THREE.Fog(skyColor, 10, 25); 
+            directionalLight.intensity = lightIntensity * 0.8;
+            ambientLight.intensity = lightIntensity * 0.6;
+            directionalLight.color.set(isNight ? 0x9999ff : 0xffffff); 
+        }
+
+        // --- UI (Hotbar) e Controles (Inalterado) ---
+        function setupUI() {
+            const hotbar = document.getElementById('hotbar');
+            
+            blocksDef.slice(0, 6).forEach((block, index) => {
+                const slot = document.createElement('div');
+                slot.className = index === 0 ? 'slot active' : 'slot';
+                slot.id = `slot-${index}`;
+                
+                const icon = document.createElement('div');
+                icon.className = 'block-icon';
+                icon.style.backgroundColor = block.color;
+                
+                const num = document.createElement('span');
+                num.className = 'key-num';
+                num.innerText = index + 1;
+
+                slot.appendChild(num);
+                slot.appendChild(icon);
+                hotbar.appendChild(slot);
+            });
+        }
+
+        function updateHotbarSelection(index) {
+            for (let i = 0; i < 6; i++) {
+                const s = document.getElementById(`slot-${i}`);
+                if(s) s.classList.remove('active');
+            }
+            const selected = document.getElementById(`slot-${index}`);
+            if (selected) {
+                selected.classList.add('active');
+                selectedBlockType = blocksDef[index].id;
+            }
+        }
+
+
+        // --- Loop Principal e Física ---
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const delta = Math.min(clock.getDelta(), 0.1);
+
+            updateChunks();
+            updateTime(delta);
+            updateMobs(delta);
+            
+            if (isLocked) {
+                // ... (Física de movimento e colisão inalterada) ...
+                velocity.y -= 18.0 * delta; 
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * (40.0 * walkingSpeed) * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * (40.0 * walkingSpeed) * delta;
+
+                velocity.x -= velocity.x * friction * delta;
+                velocity.z -= velocity.z * friction * delta;
+                
+                const currentHoriSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+                if (currentHoriSpeed > walkingSpeed) {
+                    const ratio = walkingSpeed / currentHoriSpeed;
+                    velocity.x *= ratio;
+                    velocity.z *= ratio;
+                }
+                
+                const rotationY = camera.rotation.y;
+                const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotationY);
+                const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), rotationY);
+
+                const dx = (forward.x * -velocity.z + right.x * velocity.x) * delta;
+                const dz = (forward.z * -velocity.z + right.z * velocity.x) * delta;
+                const dy = velocity.y * delta;
+
+                const oldPos = camera.position.clone();
+
+                // Colisão X
+                camera.position.x += dx;
+                if (checkPlayerCollision(camera.position)) { camera.position.x = oldPos.x; velocity.x = 0; }
+
+                // Colisão Z
+                camera.position.z += dz;
+                if (checkPlayerCollision(camera.position)) { camera.position.z = oldPos.z; velocity.z = 0; }
+
+                // Colisão Y
+                camera.position.y += dy;
+                if (checkPlayerCollision(camera.position)) {
+                    camera.position.y = oldPos.y;
+                    if (velocity.y < 0) canJump = true;
+                    velocity.y = 0;
+                } 
+
+                if (camera.position.y < -30) { // Se cair muito, reseta para uma posição segura no ar
+                    camera.position.set(camera.position.x, WORLD_HEIGHT + 2, camera.position.z);
+                    velocity.set(0,0,0);
+                }
+            }
+            renderer.render(scene, camera);
+        }
+
+        // --- Controles e Eventos (Inalterado) ---
+        function setupControls() {
+            document.addEventListener('keydown', (e) => {
+                switch(e.code) {
+                    case 'KeyW': moveForward = true; break; case 'KeyA': moveLeft = true; break;
+                    case 'KeyS': moveBackward = true; break; case 'KeyD': moveRight = true; break;
+                    case 'Space': 
+                        if (canJump) { velocity.y = 7.0; canJump = false; }
+                        break;
+                }
+                if (e.key >= '1' && e.key <= '6') { updateHotbarSelection(parseInt(e.key) - 1); }
+            });
+
+            document.addEventListener('keyup', (e) => {
+                switch(e.code) {
+                    case 'KeyW': moveForward = false; break; case 'KeyA': moveLeft = false; break;
+                    case 'KeyS': moveBackward = false; break; case 'KeyD': moveRight = false; break;
+                }
+            });
+
+            document.addEventListener('wheel', (e) => {
+                if(!isLocked) return;
+                let current = blocksDef.findIndex(b => b.id === selectedBlockType);
+                if (e.deltaY > 0) current = (current + 1) % 6; 
+                else current = (current - 1 + 6) % 6; 
+                updateHotbarSelection(current);
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (isLocked) {
+                    camera.rotation.y -= e.movementX * 0.002;
+                    camera.rotation.x -= e.movementY * 0.002;
+                    camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+                }
+            });
+            document.addEventListener('mousedown', onMouseDown);
+            document.addEventListener('pointerlockchange', () => {
+                isLocked = (document.pointerLockElement === document.body);
+                document.getElementById('instructions').style.display = isLocked ? 'none' : 'block';
+            });
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
